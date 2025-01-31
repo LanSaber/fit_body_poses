@@ -37,6 +37,10 @@ def parse_config(argv=None):
     parser.add_argument('--data_folder',
                         default=os.getcwd(),
                         help='The directory that contains the data.')
+    parser.add_argument('--data_subset', default='data/phoenix2014T_train.pkl', type=str,
+                        help='The folder where the subset file is stored')
+    parser.add_argument('--keypoints_folder', default='', type=str,
+                        help='The folder where the keypoints file is stored')
     parser.add_argument('--max_persons', type=int, default=3,
                         help='The maximum number of persons to process')
     parser.add_argument('-c', '--config',
@@ -73,7 +77,7 @@ def parse_config(argv=None):
                         default='output',
                         type=str,
                         help='The folder where the output is stored')
-    parser.add_argument('--img_folder', type=str, default='images',
+    parser.add_argument('--img_folder', type=str, default='dev',
                         help='The folder where the images are stored')
     parser.add_argument('--keyp_folder', type=str, default='keypoints',
                         help='The folder where the keypoints are stored')

@@ -32,7 +32,7 @@ import numpy as np
 
 import torch
 from torch.utils.data import Dataset
-
+import pickle
 
 from utils import smpl_to_openpose
 
@@ -105,7 +105,7 @@ class OpenPose(Dataset):
     NUM_BODY_JOINTS = 25
     NUM_HAND_JOINTS = 20
 
-    def __init__(self, data_folder, img_folder='images',
+    def __init__(self, data_folder, img_folder='image',
                  keyp_folder='keypoints',
                  use_hands=False,
                  use_face=False,
@@ -128,23 +128,62 @@ class OpenPose(Dataset):
 
         self.num_joints = (self.NUM_BODY_JOINTS +
                            2 * self.NUM_HAND_JOINTS * use_hands)
-
         self.img_folder = osp.join(data_folder, img_folder)
         self.keyp_folder = osp.join(data_folder, keyp_folder)
+        if self.img_folder.endswith("dev"):
+            with open("phoenix-2014t-keypoints.pkl", "rb") as f:
+                self.keypoint_dict = pickle.load(f)
+                self.img_paths = []
+            image_folder = os.path.join(data_folder, "1")
+            self.img_paths = [osp.join(image_folder, img_fn)
+                              for img_fn in os.listdir(image_folder)
+                              if img_fn.endswith('.png') or
+                              img_fn.endswith('.jpg') and
+                              not img_fn.startswith('.')]
 
-        self.img_paths = [osp.join(self.img_folder, img_fn)
-                          for img_fn in os.listdir(self.img_folder)
-                          if img_fn.endswith('.png') or
-                          img_fn.endswith('.jpg') and
-                          not img_fn.startswith('.')]
+        else:
+            self.img_paths = [osp.join(self.img_folder, img_fn)
+                              for img_fn in os.listdir(self.img_folder)
+                              if img_fn.endswith('.png') or
+                              img_fn.endswith('.jpg') and
+                              not img_fn.startswith('.')]
         self.img_paths = sorted(self.img_paths)
         self.cnt = 0
+        self.batch_size = kwargs.get('batch_size', 1)
 
     def get_model2data(self):
         return smpl_to_openpose(self.model_type, use_hands=self.use_hands,
                                 use_face=self.use_face,
                                 use_face_contour=self.use_face_contour,
                                 openpose_format=self.openpose_format)
+
+    def read_phoneix_keypoints(self, img_path):
+        img_str = "fullFrame-210x260px/train/01April_2010_Thursday_heute_default-0"
+        img_path_in_data_set = os.path.join(img_str,img_path[12:])
+        img_keys = img_path_in_data_set.split(".", 1)[0]
+        import re
+        match = re.search(r'(\d+)(?=\.png)', img_path_in_data_set)
+        index = int(match.group(1))
+        keypoints_all_frame = self.keypoint_dict[img_keys]["keypoints"]
+        keypoints_all_frame = add_lower_body(keypoints_all_frame)
+        keypoints_single_frame = keypoints_all_frame[index]
+
+        keypoints_right_hand = keypoints_single_frame[91:112]
+        keypoints_left_hand = keypoints_single_frame[112:133]
+        keypoints_body =  keypoints_single_frame[np.r_[0:13,133:140], :]
+        place_holder = np.zeros([5, 3])
+        keypoints = []
+
+        gender_pd = []
+        gender_gt = []
+        key_points = np.concatenate(
+                [keypoints_body, place_holder, keypoints_left_hand, keypoints_right_hand], axis=0)
+        keypoints.append(key_points)
+
+        return Keypoints(keypoints=keypoints, gender_pd=gender_pd,
+                     gender_gt=gender_gt)
+
+
 
     def get_left_shoulder(self):
         return 2
@@ -164,6 +203,21 @@ class OpenPose(Dataset):
         # annotation of the hips is ambiguous.
         if self.joints_to_ign is not None and -1 not in self.joints_to_ign:
             optim_weights[self.joints_to_ign] = 0.
+        return torch.stack([torch.tensor(optim_weights, dtype=self.dtype)] * self.batch_size, dim=0)
+        # return torch.tensor(optim_weights, dtype=self.dtype)
+
+    def get_phoneix_joint_weights(self):
+        # The weights for the joint terms in the optimization
+        optim_weights = np.ones(self.num_joints + 2 * self.use_hands +
+                                self.use_face * 51 +
+                                17 * self.use_face_contour,
+                                dtype=np.float32)
+        # Neck, Left and right hip
+        # These joints are ignored because SMPL has no neck joint and the
+        # annotation of the hips is ambiguous.
+        optim_weights[21:26] = 0
+        # if self.joints_to_ign is not None and -1 not in self.joints_to_ign:
+        #     optim_weights[self.joints_to_ign] = 0.
         return torch.tensor(optim_weights, dtype=self.dtype)
 
     def __len__(self):
@@ -180,9 +234,17 @@ class OpenPose(Dataset):
 
         keypoint_fn = osp.join(self.keyp_folder,
                                img_fn + '_keypoints.json')
-        keyp_tuple = read_keypoints(keypoint_fn, use_hands=self.use_hands,
-                                    use_face=self.use_face,
-                                    use_face_contour=self.use_face_contour)
+
+        if self.img_folder.endswith("dev"):
+            # keyp_tuple = self.read_phoneix_keypoints(img_path)
+            output_dict = {'fn': img_path,
+                           'img_path': img_path,'img': img}
+
+            return output_dict
+        else:
+            keyp_tuple = read_keypoints(keypoint_fn, use_hands=self.use_hands,
+                                        use_face=self.use_face,
+                                        use_face_contour=self.use_face_contour)
 
         if len(keyp_tuple.keypoints) < 1:
             return {}

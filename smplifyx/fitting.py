@@ -71,8 +71,9 @@ def guess_init(model,
 
     '''
 
-    body_pose = vposer.decode(
-        pose_embedding, output_type='aa').view(1, -1) if use_vposer else None
+    # body_pose = vposer.decode(
+    #     pose_embedding, output_type='aa').view(1, -1) if use_vposer else None
+    body_pose = (vposer.decode(pose_embedding).get( 'pose_body')).reshape(1, -1) if use_vposer else None
     if use_vposer and model_type == 'smpl':
         wrist_pose = torch.zeros([body_pose.shape[0], 6],
                                  dtype=body_pose.dtype,
@@ -215,7 +216,9 @@ class FittingMonitor(object):
 
     def create_fitting_closure(self,
                                optimizer, body_model, camera=None,
-                               gt_joints=None, loss=None,
+                               gt_joints=None,
+                               visibility=None, joints_smooth=None, idx=0,
+                               loss=None,
                                joints_conf=None,
                                joint_weights=None,
                                return_verts=True, return_full_pose=False,
@@ -230,9 +233,10 @@ class FittingMonitor(object):
             if backward:
                 optimizer.zero_grad()
 
-            body_pose = vposer.decode(
-                pose_embedding, output_type='aa').view(
-                    1, -1) if use_vposer else None
+            # body_pose = vposer.decode(
+            #     pose_embedding, output_type='aa').view(
+            #         1, -1) if use_vposer else None
+            body_pose = (vposer.decode(pose_embedding).get( 'pose_body')).reshape(1, -1) if use_vposer else None
 
             if append_wrists:
                 wrist_pose = torch.zeros([body_pose.shape[0], 6],
@@ -244,7 +248,7 @@ class FittingMonitor(object):
                                            body_pose=body_pose,
                                            return_full_pose=return_full_pose)
             total_loss = loss(body_model_output, camera=camera,
-                              gt_joints=gt_joints,
+                              gt_joints=gt_joints, visibility=visibility,joints_smooth=joints_smooth, idx=idx,
                               body_model_faces=faces_tensor,
                               joints_conf=joints_conf,
                               joint_weights=joint_weights,
@@ -299,6 +303,10 @@ class SMPLifyLoss(nn.Module):
                  hand_prior_weight=0.0,
                  expr_prior_weight=0.0, jaw_prior_weight=0.0,
                  coll_loss_weight=0.0,
+                 smooth_loss_weight=8e3,
+                 unseen_left_weight=3e3,
+                 unseen_right_weight=3e3,
+                 upstanding_loss_weight=3e5,
                  reduction='sum',
                  **kwargs):
 
@@ -313,6 +321,11 @@ class SMPLifyLoss(nn.Module):
         self.body_pose_prior = body_pose_prior
 
         self.shape_prior = shape_prior
+
+        self.smooth_loss_weight=smooth_loss_weight
+        self.unseen_left_weight=unseen_left_weight
+        self.unseen_right_weight=unseen_right_weight
+        self.upstanding_loss_weight=upstanding_loss_weight
 
         self.interpenetration = interpenetration
         if self.interpenetration:
@@ -362,21 +375,46 @@ class SMPLifyLoss(nn.Module):
                                                  device=weight_tensor.device)
                 setattr(self, key, weight_tensor)
 
-    def forward(self, body_model_output, camera, gt_joints, joints_conf,
+    def forward(self, body_model_output, camera, gt_joints,
+                visibility, joints_smooth, idx,
+                joints_conf,
                 body_model_faces, joint_weights,
                 use_vposer=False, pose_embedding=None,
                 **kwargs):
         projected_joints = camera(body_model_output.joints)
+        joints_to_smooth = body_model_output.body_pose.reshape(gt_joints.shape[0],21,3)
         # Calculate the weights for each joints
         weights = (joint_weights * joints_conf
                    if self.use_joints_conf else
                    joint_weights).unsqueeze(dim=-1)
 
+        if visibility[0,7] >0.65:
+            self.unseen_left_weight = 0
+        if visibility[0,4] >0.65:
+            self.unseen_right_weight = 0
+        if idx == 0:
+            self.smooth_loss_weight = 0
+
         # Calculate the distance of the projected joints from
         # the ground truth 2D detections
         joint_diff = self.robustifier(gt_joints - projected_joints)
+        joint_diff_elbow = self.robustifier(gt_joints[:, 3, :] - projected_joints[:, 3, :]) + self.robustifier(
+                        gt_joints[:, 6, :] - projected_joints[:, 6, :]) + \
+                       self.robustifier(gt_joints[:, 0, :] - projected_joints[:, 0, :])
         joint_loss = (torch.sum(weights ** 2 * joint_diff) *
-                      self.data_weight ** 2)
+                      self.data_weight ** 2) + torch.sum(joint_diff_elbow) * 5e1
+
+        upstanding_rest_loss = torch.sum(self.robustifier(joints_to_smooth[:,0:11,:]))
+        upstanding_depth_loss = torch.sum(self.robustifier(body_model_output.joints[:, 1, 2].unsqueeze(1) - body_model_output.joints[:, 8:11, 2]))+ \
+                                torch.sum(self.robustifier(body_model_output.joints[:, 1, 2].unsqueeze(1) - body_model_output.joints[:, 12:14, 2]))
+        upstanding_loss = upstanding_rest_loss * self.upstanding_loss_weight + upstanding_depth_loss * self.upstanding_loss_weight * 2
+
+        smooth_loss_all = self.robustifier(joints_to_smooth - joints_smooth)
+        smooth_loss_upper = self.robustifier(joints_to_smooth[:, 11:19, :] - joints_smooth[:, 11:19, :])
+        smooth_loss = torch.sum(smooth_loss_all) * self.smooth_loss_weight + torch.sum(smooth_loss_upper) * self.smooth_loss_weight * 2
+
+        unseen_loss = torch.sum(self.robustifier(joints_to_smooth[:,17,:]+joints_to_smooth[:,19,:])) * self.unseen_left_weight + \
+                     torch.sum(self.robustifier(joints_to_smooth[:,18, :]+joints_to_smooth[:,20,:])) * self.unseen_right_weight
 
         # Calculate the loss from the Pose prior
         if use_vposer:
@@ -445,7 +483,7 @@ class SMPLifyLoss(nn.Module):
         total_loss = (joint_loss + pprior_loss + shape_loss +
                       angle_prior_loss + pen_loss +
                       jaw_prior_loss + expression_loss +
-                      left_hand_prior_loss + right_hand_prior_loss)
+                      left_hand_prior_loss + right_hand_prior_loss + smooth_loss + upstanding_loss + unseen_loss)
         return total_loss
 
 
@@ -483,7 +521,7 @@ class SMPLifyCameraInitLoss(nn.Module):
                                              device=weight_tensor.device)
                 setattr(self, key, weight_tensor)
 
-    def forward(self, body_model_output, camera, gt_joints,
+    def forward(self, body_model_output, camera, gt_joints, visibility,joints_smooth, idx,
                 **kwargs):
 
         projected_joints = camera(body_model_output.joints)

@@ -4,6 +4,8 @@ joints_to_ign:
     - 9
     - 12
 data_folder: "data"
+data_subset: "/home/hhm/SLRT/Spoken2Sign/data/Phoenix-2014T.pkl"
+keypoints_folder: '/home/hhm/smplify-x/phoenix-2014t-keypoints.pkl'
 output_folder: 'smplx_debug'
 prior_folder: 'priors'
 model_folder: 'models'

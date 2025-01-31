@@ -4,11 +4,13 @@ joints_to_ign:
     - 9
     - 12
 data_folder: "data"
+data_subset: "/home/hhm/SLRT/Spoken2Sign/data/Phoenix-2014T.pkl"
+keypoints_folder: '/home/hhm/smplify-x/phoenix-2014t-keypoints.pkl'
 output_folder: 'smplh_fits'
 prior_folder: 'priors'
 model_folder: 'models'
 result_folder: 'results'
-gender: "neutral"
+gender: "female"
 model_type: 'smplh'
 # Flag for using the GPU
 use_cuda: True
@@ -38,11 +40,11 @@ max_collisions: 128
 optim_type: 'lbfgsls'
 ftol: 1e-9
 gtol: 1e-9
-lr: 1.0
+lr: 0.1
 # Max number of optimization iterations
 maxiters: 30
 interactive: True
-visualize: False
+visualize: True
 # Relative change in loss value
 body_pose_prior_weights:
     - 4.04e2
