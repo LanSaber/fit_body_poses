@@ -130,24 +130,31 @@ class OpenPose(Dataset):
                            2 * self.NUM_HAND_JOINTS * use_hands)
         self.img_folder = osp.join(data_folder, img_folder)
         self.keyp_folder = osp.join(data_folder, keyp_folder)
-        if self.img_folder.endswith("dev"):
-            with open("phoenix-2014t-keypoints.pkl", "rb") as f:
-                self.keypoint_dict = pickle.load(f)
-                self.img_paths = []
-            image_folder = os.path.join(data_folder, "1")
-            self.img_paths = [osp.join(image_folder, img_fn)
-                              for img_fn in os.listdir(image_folder)
-                              if img_fn.endswith('.png') or
-                              img_fn.endswith('.jpg') and
-                              not img_fn.startswith('.')]
+        self.video_directory = kwargs.get("video_directory")
+        self.from_video = False
+        if self.video_directory is None:
+            if self.img_folder.endswith("dev"):
+                with open("phoenix-2014t-keypoints.pkl", "rb") as f:
+                    self.keypoint_dict = pickle.load(f)
+                    self.img_paths = []
+                image_folder = os.path.join(data_folder, "1")
+                self.img_paths = [osp.join(image_folder, img_fn)
+                                  for img_fn in os.listdir(image_folder)
+                                  if img_fn.endswith('.png') or
+                                  img_fn.endswith('.jpg') and
+                                  not img_fn.startswith('.')]
 
+            else:
+                self.img_paths = [osp.join(self.img_folder, img_fn)
+                                  for img_fn in os.listdir(self.img_folder)
+                                  if img_fn.endswith('.png') or
+                                  img_fn.endswith('.jpg') and
+                                  not img_fn.startswith('.')]
+            self.img_paths = sorted(self.img_paths)
         else:
-            self.img_paths = [osp.join(self.img_folder, img_fn)
-                              for img_fn in os.listdir(self.img_folder)
-                              if img_fn.endswith('.png') or
-                              img_fn.endswith('.jpg') and
-                              not img_fn.startswith('.')]
-        self.img_paths = sorted(self.img_paths)
+            self.from_video = True
+            cap = cv2.VideoCapture(self.video_directory)
+            self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.cnt = 0
         self.batch_size = kwargs.get('batch_size', 1)
 
@@ -227,39 +234,51 @@ class OpenPose(Dataset):
         img_path = self.img_paths[idx]
         return self.read_item(img_path)
 
-    def read_item(self, img_path):
-        img = cv2.imread(img_path).astype(np.float32)[:, :, ::-1] / 255.0
-        img_fn = osp.split(img_path)[1]
-        img_fn, _ = osp.splitext(osp.split(img_path)[1])
+    def read_item(self, img_path, index = 0):
+        if self.video_directory is None:
+            img = cv2.imread(img_path).astype(np.float32)[:, :, ::-1] / 255.0
+            img_fn = osp.split(img_path)[1]
+            img_fn, _ = osp.splitext(osp.split(img_path)[1])
 
-        keypoint_fn = osp.join(self.keyp_folder,
-                               img_fn + '_keypoints.json')
+            keypoint_fn = osp.join(self.keyp_folder,
+                                   img_fn + '_keypoints.json')
 
-        if self.img_folder.endswith("dev"):
-            # keyp_tuple = self.read_phoneix_keypoints(img_path)
-            output_dict = {'fn': img_path,
-                           'img_path': img_path,'img': img}
+            if self.img_folder.endswith("dev"):
+                # keyp_tuple = self.read_phoneix_keypoints(img_path)
+                output_dict = {'fn': img_path,
+                               'img_path': img_path,'img': img}
 
+                return output_dict
+            else:
+                keyp_tuple = read_keypoints(keypoint_fn, use_hands=self.use_hands,
+                                            use_face=self.use_face,
+                                            use_face_contour=self.use_face_contour)
+
+            if len(keyp_tuple.keypoints) < 1:
+                return {}
+            keypoints = np.stack(keyp_tuple.keypoints)
+
+            output_dict = {'fn': img_fn,
+                           'img_path': img_path,
+                           'keypoints': keypoints, 'img': img}
+            if keyp_tuple.gender_gt is not None:
+                if len(keyp_tuple.gender_gt) > 0:
+                    output_dict['gender_gt'] = keyp_tuple.gender_gt
+            if keyp_tuple.gender_pd is not None:
+                if len(keyp_tuple.gender_pd) > 0:
+                    output_dict['gender_pd'] = keyp_tuple.gender_pd
             return output_dict
         else:
-            keyp_tuple = read_keypoints(keypoint_fn, use_hands=self.use_hands,
-                                        use_face=self.use_face,
-                                        use_face_contour=self.use_face_contour)
-
-        if len(keyp_tuple.keypoints) < 1:
-            return {}
-        keypoints = np.stack(keyp_tuple.keypoints)
-
-        output_dict = {'fn': img_fn,
-                       'img_path': img_path,
-                       'keypoints': keypoints, 'img': img}
-        if keyp_tuple.gender_gt is not None:
-            if len(keyp_tuple.gender_gt) > 0:
-                output_dict['gender_gt'] = keyp_tuple.gender_gt
-        if keyp_tuple.gender_pd is not None:
-            if len(keyp_tuple.gender_pd) > 0:
-                output_dict['gender_pd'] = keyp_tuple.gender_pd
-        return output_dict
+            video_name = osp.basename(self.video_directory)[:-4]
+            import cv2
+            self.from_video = True
+            cap = cv2.VideoCapture(self.video_directory)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, index)
+            ret, frame_image = cap.read()
+            cap.release()
+            output_dict = {'fn': video_name,
+                           'img_path': video_name + "_" + str(index), 'img': frame_image}
+            return output_dict
 
     def __iter__(self):
         return self
@@ -268,10 +287,15 @@ class OpenPose(Dataset):
         return self.next()
 
     def next(self):
-        if self.cnt >= len(self.img_paths):
-            raise StopIteration
+        if self.video_directory is None:
+            if self.cnt >= len(self.img_paths):
+                raise StopIteration
 
-        img_path = self.img_paths[self.cnt]
-        self.cnt += 1
-
-        return self.read_item(img_path)
+            img_path = self.img_paths[self.cnt]
+            self.cnt += 1
+            return self.read_item(img_path)
+        else:
+           if self.cnt >= self.total_frames:
+               raise StopIteration
+           self.cnt += 1
+           return self.read_item("", self.cnt - 1)

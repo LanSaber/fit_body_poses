@@ -79,6 +79,8 @@ def parse_config(argv=None):
                         help='The folder where the output is stored')
     parser.add_argument('--img_folder', type=str, default='dev',
                         help='The folder where the images are stored')
+    parser.add_argument('--video_directory', type=str,
+                        help='The folder where the images are stored')
     parser.add_argument('--keyp_folder', type=str, default='keypoints',
                         help='The folder where the keypoints are stored')
     parser.add_argument('--summary_folder', type=str, default='summaries',

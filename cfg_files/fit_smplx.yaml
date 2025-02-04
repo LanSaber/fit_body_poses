@@ -2,10 +2,23 @@ dataset: 'openpose'
 joints_to_ign:
     - 1
     - 9
+    - 10
+    - 11
     - 12
+    - 13
+    - 14
+    - 19
+    - 20
+    - 21
+    - 22
+    - 23
+    - 24
 data_folder: "data"
 data_subset: "/home/hhm/SLRT/Spoken2Sign/data/Phoenix-2014T.pkl"
-keypoints_folder: '/home/hhm/smplify-x/phoenix-2014t-keypoints.pkl'
+# keypoints_folder: '/home/hhm/smplify-x/phoenix-2014t-keypoints.pkl'
+# keypoints_folder: '/home/hhm/sign_dataset/val_2D_keypoints/openpose_output/json/_2FBDaOPYig_1-3-rgb_front'
+keypoints_folder: '/home/hhm/sign_dataset/val_raw_poses/_2FBDaOPYig-3-rgb_front'
+video_directory: '/home/hhm/sign_dataset/val_raw_videos/raw_videos/_2FBDaOPYig-3-rgb_front.mp4'
 output_folder: 'smplx_debug'
 prior_folder: 'priors'
 model_folder: 'models'

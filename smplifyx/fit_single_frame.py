@@ -105,7 +105,7 @@ def fit_single_frame(img,
                      left_shoulder_idx=2,
                      right_shoulder_idx=5,
                      **kwargs):
-    # assert batch_size == 1, 'PyTorch L-BFGS only supports batch_size == 1'
+    assert batch_size == 1, 'PyTorch L-BFGS only supports batch_size == 1'
     batch_size = keypoints.shape[0]
 
     device = torch.device('cuda') if use_cuda else torch.device('cpu')
@@ -485,6 +485,8 @@ def fit_single_frame(img,
                 tqdm.write(
                     'Body fitting Orientation {} done after {:.4f} seconds'.format(
                         or_idx, elapsed))
+                if final_loss_val is None:
+                    final_loss_val = 9999999
                 tqdm.write('Body final loss val = {:.5f}'.format(
                     final_loss_val))
 
