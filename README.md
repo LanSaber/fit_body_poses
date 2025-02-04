@@ -128,3 +128,13 @@ The code of this repository was implemented by [Vassilis Choutas](mailto:vassili
 For questions, please contact [smplx@tue.mpg.de](mailto:smplx@tue.mpg.de). 
 
 For commercial licensing (and all related questions for business applications), please contact [ps-licensing@tue.mpg.de](mailto:ps-licensing@tue.mpg.de).
+
+### Run
+python main.py --config cfg_files/fit_smplx.yaml     --data_folder data_folder    --output_folder output_folder     --visualize="True/False"    --model_folder /home/hhm/smpl_model   --vposer_ckpt V02_05
+
+Set parameter in cfg_files/fit_smplx.yaml:
+keypoints_folder: folder directory of openpose（BODY25）keypoints;
+video_directory: directory of the .mp4 file
+
+Some data files may be used:
+https://drive.google.com/drive/folders/1tm1LrnhIJ99--UsXFzxRFIZlueHMP6f6?usp=drive_link
