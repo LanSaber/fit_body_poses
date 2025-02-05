@@ -34,6 +34,7 @@ import torch
 from torch.utils.data import Dataset
 import pickle
 
+from data_process import keypoints
 from utils import smpl_to_openpose
 
 Keypoints = namedtuple('Keypoints',
@@ -128,33 +129,11 @@ class OpenPose(Dataset):
 
         self.num_joints = (self.NUM_BODY_JOINTS +
                            2 * self.NUM_HAND_JOINTS * use_hands)
-        self.img_folder = osp.join(data_folder, img_folder)
-        self.keyp_folder = osp.join(data_folder, keyp_folder)
+        self.keyp_folder = kwargs.get("keypoints_folder")
         self.video_directory = kwargs.get("video_directory")
+        self.video_name_list = sorted(os.listdir(self.video_directory))
         self.from_video = False
-        if self.video_directory is None:
-            if self.img_folder.endswith("dev"):
-                with open("phoenix-2014t-keypoints.pkl", "rb") as f:
-                    self.keypoint_dict = pickle.load(f)
-                    self.img_paths = []
-                image_folder = os.path.join(data_folder, "1")
-                self.img_paths = [osp.join(image_folder, img_fn)
-                                  for img_fn in os.listdir(image_folder)
-                                  if img_fn.endswith('.png') or
-                                  img_fn.endswith('.jpg') and
-                                  not img_fn.startswith('.')]
-
-            else:
-                self.img_paths = [osp.join(self.img_folder, img_fn)
-                                  for img_fn in os.listdir(self.img_folder)
-                                  if img_fn.endswith('.png') or
-                                  img_fn.endswith('.jpg') and
-                                  not img_fn.startswith('.')]
-            self.img_paths = sorted(self.img_paths)
-        else:
-            self.from_video = True
-            cap = cv2.VideoCapture(self.video_directory)
-            self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.from_video = True
         self.cnt = 0
         self.batch_size = kwargs.get('batch_size', 1)
 
@@ -163,34 +142,6 @@ class OpenPose(Dataset):
                                 use_face=self.use_face,
                                 use_face_contour=self.use_face_contour,
                                 openpose_format=self.openpose_format)
-
-    def read_phoneix_keypoints(self, img_path):
-        img_str = "fullFrame-210x260px/train/01April_2010_Thursday_heute_default-0"
-        img_path_in_data_set = os.path.join(img_str,img_path[12:])
-        img_keys = img_path_in_data_set.split(".", 1)[0]
-        import re
-        match = re.search(r'(\d+)(?=\.png)', img_path_in_data_set)
-        index = int(match.group(1))
-        keypoints_all_frame = self.keypoint_dict[img_keys]["keypoints"]
-        keypoints_all_frame = add_lower_body(keypoints_all_frame)
-        keypoints_single_frame = keypoints_all_frame[index]
-
-        keypoints_right_hand = keypoints_single_frame[91:112]
-        keypoints_left_hand = keypoints_single_frame[112:133]
-        keypoints_body =  keypoints_single_frame[np.r_[0:13,133:140], :]
-        place_holder = np.zeros([5, 3])
-        keypoints = []
-
-        gender_pd = []
-        gender_gt = []
-        key_points = np.concatenate(
-                [keypoints_body, place_holder, keypoints_left_hand, keypoints_right_hand], axis=0)
-        keypoints.append(key_points)
-
-        return Keypoints(keypoints=keypoints, gender_pd=gender_pd,
-                     gender_gt=gender_gt)
-
-
 
     def get_left_shoulder(self):
         return 2
@@ -213,72 +164,25 @@ class OpenPose(Dataset):
         return torch.stack([torch.tensor(optim_weights, dtype=self.dtype)] * self.batch_size, dim=0)
         # return torch.tensor(optim_weights, dtype=self.dtype)
 
-    def get_phoneix_joint_weights(self):
-        # The weights for the joint terms in the optimization
-        optim_weights = np.ones(self.num_joints + 2 * self.use_hands +
-                                self.use_face * 51 +
-                                17 * self.use_face_contour,
-                                dtype=np.float32)
-        # Neck, Left and right hip
-        # These joints are ignored because SMPL has no neck joint and the
-        # annotation of the hips is ambiguous.
-        optim_weights[21:26] = 0
-        # if self.joints_to_ign is not None and -1 not in self.joints_to_ign:
-        #     optim_weights[self.joints_to_ign] = 0.
-        return torch.tensor(optim_weights, dtype=self.dtype)
-
     def __len__(self):
         return len(self.img_paths)
 
     def __getitem__(self, idx):
-        img_path = self.img_paths[idx]
-        return self.read_item(img_path)
+        return self.read_item(idx)
 
-    def read_item(self, img_path, index = 0):
-        if self.video_directory is None:
-            img = cv2.imread(img_path).astype(np.float32)[:, :, ::-1] / 255.0
-            img_fn = osp.split(img_path)[1]
-            img_fn, _ = osp.splitext(osp.split(img_path)[1])
-
-            keypoint_fn = osp.join(self.keyp_folder,
-                                   img_fn + '_keypoints.json')
-
-            if self.img_folder.endswith("dev"):
-                # keyp_tuple = self.read_phoneix_keypoints(img_path)
-                output_dict = {'fn': img_path,
-                               'img_path': img_path,'img': img}
-
-                return output_dict
-            else:
-                keyp_tuple = read_keypoints(keypoint_fn, use_hands=self.use_hands,
-                                            use_face=self.use_face,
-                                            use_face_contour=self.use_face_contour)
-
-            if len(keyp_tuple.keypoints) < 1:
-                return {}
-            keypoints = np.stack(keyp_tuple.keypoints)
-
-            output_dict = {'fn': img_fn,
-                           'img_path': img_path,
-                           'keypoints': keypoints, 'img': img}
-            if keyp_tuple.gender_gt is not None:
-                if len(keyp_tuple.gender_gt) > 0:
-                    output_dict['gender_gt'] = keyp_tuple.gender_gt
-            if keyp_tuple.gender_pd is not None:
-                if len(keyp_tuple.gender_pd) > 0:
-                    output_dict['gender_pd'] = keyp_tuple.gender_pd
-            return output_dict
-        else:
-            video_name = osp.basename(self.video_directory)[:-4]
-            import cv2
-            self.from_video = True
-            cap = cv2.VideoCapture(self.video_directory)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, index)
-            ret, frame_image = cap.read()
-            cap.release()
-            output_dict = {'fn': video_name,
-                           'img_path': video_name + "_" + str(index), 'img': frame_image}
-            return output_dict
+    def read_item(self, index = 0):
+        video_path = osp.join(self.video_directory, self.video_name_list[index])
+        keypoints_path = osp.join(self.keyp_folder,self.video_name_list[index].replace(".mp4", ""))
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        keypoints_path_list = os.listdir(keypoints_path)
+        import re
+        keypoints_path_list  = sorted(keypoints_path_list, key=lambda file_name: int(re.search(r'_(\d+)_keypoints', file_name).group(1)))
+        keypoints_path_list = [os.path.join(keypoints_path, path) for path in keypoints_path_list]
+        output_dict = {'video_cap': cap,
+                       'keypoints_path_list': keypoints_path_list,
+                       'video_name': self.video_name_list[index]}
+        return output_dict
 
     def __iter__(self):
         return self
@@ -287,15 +191,16 @@ class OpenPose(Dataset):
         return self.next()
 
     def next(self):
-        if self.video_directory is None:
-            if self.cnt >= len(self.img_paths):
-                raise StopIteration
+        if self.cnt >= len(self.video_name_list):
+           raise StopIteration
 
-            img_path = self.img_paths[self.cnt]
+        video_path = osp.join(self.video_directory, self.video_name_list[self.cnt])
+        keypoints_path = osp.join(self.keyp_folder,self.video_name_list[self.cnt].replace(".mp4", ""))
+        self.cnt += 1
+        # check if both keypoints file and video file exist
+        while not os.path.exists(video_path) or not os.path.exists(keypoints_path):
+            if self.cnt >= len(self.video_name_list):
+                raise StopIteration
+            video_path = osp.join(self.video_directory, self.video_name_list[self.cnt])
             self.cnt += 1
-            return self.read_item(img_path)
-        else:
-           if self.cnt >= self.total_frames:
-               raise StopIteration
-           self.cnt += 1
-           return self.read_item("", self.cnt - 1)
+        return self.read_item(self.cnt - 1)

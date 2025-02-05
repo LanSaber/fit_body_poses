@@ -26,13 +26,13 @@ import os
 import os.path as osp
 
 import time
+
+import cv2
 import yaml
 import torch
 
 import smplx
-from click.core import batch
 
-from data_process import keypoints
 from utils import JointMapper
 from cmd_parser import parse_config
 from data_parser import create_dataset
@@ -84,37 +84,32 @@ def main(**args):
         print('CUDA is not available, exiting!')
         sys.exit(-1)
 
-    video_ids_folder = args["data_subset"]
-    with open(video_ids_folder, "rb") as f:
-        video_ids = pickle.load(f)
-
     keypoints_folder = args['keypoints_folder']
-    if os.path.isdir(keypoints_folder):
-        file_list = os.listdir(keypoints_folder)
-        file_list = sorted(file_list, key=lambda file_name: int(re.search(r'_(\d+)_keypoints', file_name).group(1)))
-        import numpy as np
-        keypoints_all = np.zeros((len(file_list), 118,  3))
-        for i, file_name in enumerate(file_list):
-            with open(os.path.join(keypoints_folder, file_name), 'rb') as f:
-                keypoints_dict = json.load(f)
-                keypoints_person = keypoints_dict['people'][0]
-                keypoints = []
-                keypoints_body = keypoints_person['pose_keypoints_2d']
-                keypoints_face = keypoints_person['face_keypoints_2d'][51:204]
-                keypoints_lhand = keypoints_person['hand_left_keypoints_2d']
-                keypoints_rhand = keypoints_person['hand_right_keypoints_2d']
-                keypoints.extend(keypoints_body)
-                keypoints.extend(keypoints_lhand)
-                keypoints.extend(keypoints_rhand)
-                keypoints.extend(keypoints_face)
-                keypoints = np.array(keypoints).reshape(-1, 3)
-                keypoints_all[i] = keypoints
-    else:
-        with open(keypoints_folder, 'rb') as f:
-            keypoints_all = pickle.load(f)
+    # if os.path.isdir(keypoints_folder):
+    #     file_list = os.listdir(keypoints_folder)
+    #     file_list = sorted(file_list, key=lambda file_name: int(re.search(r'_(\d+)_keypoints', file_name).group(1)))
+    #     import numpy as np
+    #     keypoints_all = np.zeros((len(file_list), 118,  3))
+    #     for i, file_name in enumerate(file_list):
+    #         with open(os.path.join(keypoints_folder, file_name), 'rb') as f:
+    #             keypoints_dict = json.load(f)
+    #             keypoints_person = keypoints_dict['people'][0]
+    #             keypoints = []
+    #             keypoints_body = keypoints_person['pose_keypoints_2d']
+    #             keypoints_face = keypoints_person['face_keypoints_2d'][51:204]
+    #             keypoints_lhand = keypoints_person['hand_left_keypoints_2d']
+    #             keypoints_rhand = keypoints_person['hand_right_keypoints_2d']
+    #             keypoints.extend(keypoints_body)
+    #             keypoints.extend(keypoints_lhand)
+    #             keypoints.extend(keypoints_rhand)
+    #             keypoints.extend(keypoints_face)
+    #             keypoints = np.array(keypoints).reshape(-1, 3)
+    #             keypoints_all[i] = keypoints
+    # else:
+    #     with open(keypoints_folder, 'rb') as f:
+    #         keypoints_all = pickle.load(f)
 
-    img_folder = args.pop('img_folder', 'images')
-    dataset_obj = create_dataset(img_folder=img_folder, video_id=video_ids[0], **args)
+    dataset_obj = create_dataset(**args)
 
     start = time.time()
 
@@ -235,55 +230,36 @@ def main(**args):
 
     for idx, data in enumerate(dataset_obj):
 
-        img = data['img']
-        fn = data['fn']
+        video_cap = data["video_cap"]
+        keypoints_path_list = data["keypoints_path_list"]
+        # img = data['img']
+        fn = data["video_name"]
 
         import numpy as np
-        if type(keypoints_all) is dict:
-            keypoints_coco = np.array(keypoints_all[video_ids[idx]]["keypoints"])
-            keypoints_coco = torch.tensor(keypoints_coco)
+        keypoints = np.zeros((len(keypoints_path_list), 118, 3))
+        for i, file_name in enumerate(keypoints_path_list):
+            with open(os.path.join(keypoints_folder, file_name), 'rb') as f:
+                keypoints_dict = json.load(f)
+                keypoints_person = keypoints_dict['people'][0]
+                keypoints_per_frame = []
+                keypoints_body = keypoints_person['pose_keypoints_2d']
+                keypoints_face = keypoints_person['face_keypoints_2d'][51:204]
+                keypoints_lhand = keypoints_person['hand_left_keypoints_2d']
+                keypoints_rhand = keypoints_person['hand_right_keypoints_2d']
+                keypoints_per_frame .extend(keypoints_body)
+                keypoints_per_frame .extend(keypoints_lhand)
+                keypoints_per_frame .extend(keypoints_rhand)
+                keypoints_per_frame .extend(keypoints_face)
+                keypoints_per_frame  = np.array(keypoints_per_frame).reshape(-1, 3)
+                keypoints[i] = keypoints_per_frame
 
-            mapping = np.array([0, 6, 6, 8, 10, 5, 7, 9, 12, 12, 14, 16, 11, 13, 15, 2, 1, 4, 3, 17, 18, 19, 21, 21, 22],
-                               dtype=np.int32)
-            keypoints_openpose = torch.zeros([keypoints_coco.shape[0], 118, 3])
-            for k, indice in enumerate(mapping):
-                keypoints_openpose[:, k, :] = keypoints_coco[:, indice, :]
-            keypoints_openpose[:, 1, 0] = (keypoints_coco[:, 5, 0] + keypoints_coco[:, 6, 0]) / 2
-            keypoints_openpose[:, 8, 0] = (keypoints_coco[:, 12, 0] + keypoints_coco[:, 11, 0]) / 2
-            keypoints_openpose[:, 25:67, :] = keypoints_coco[:, 91:, :]
-            keypoints_openpose[:, 67:, :] = keypoints_coco[:, 40:91, :]
-            keypoints_openpose = keypoints_openpose.to(device=device)
-            # if dataset_to_fitting == 'Phoenix-2014T':
-            #     keypoints_openpose[:, :, 0] *= 1.24
-
-            len_shoulder = keypoints_openpose[:, 5, 0] - keypoints_openpose[:, 2, 0]
-            len_waist = len_shoulder / 1.7
-            keypoints_openpose[:, 8, 0] = keypoints_openpose[:, 1, 0]
-            keypoints_openpose[:, 8, 1] = keypoints_openpose[:, 1, 1] + 1.5 * len_shoulder
-            keypoints_openpose[:, 9, 0] = keypoints_openpose[:, 8, 0] - 0.5 * len_waist
-            keypoints_openpose[:, 9, 1] = keypoints_openpose[:, 8, 1]
-            keypoints_openpose[:, 12, 0] = keypoints_openpose[:, 8, 0] + 0.5 * len_waist
-            keypoints_openpose[:, 12, 1] = keypoints_openpose[:, 8, 1]
-            keypoints_openpose[:, 10, 0] = keypoints_openpose[:, 9, 0]
-            keypoints_openpose[:, 10, 1] = keypoints_openpose[:, 9, 1] + 2. * len_waist
-            keypoints_openpose[:, 11, 0] = keypoints_openpose[:, 9, 0]
-            keypoints_openpose[:, 11, 1] = keypoints_openpose[:, 9, 1] + 4. * len_waist
-            keypoints_openpose[:, 13, 0] = keypoints_openpose[:, 12, 0]
-            keypoints_openpose[:, 13, 1] = keypoints_openpose[:, 12, 1] + 2. * len_waist
-            keypoints_openpose[:, 14, 0] = keypoints_openpose[:, 12, 0]
-            keypoints_openpose[:, 14, 1] = keypoints_openpose[:, 12, 1] + 4. * len_waist
-            keypoints_openpose[:, 8:15, 2] = 0.65
-
-            keypoints = keypoints_openpose
-        else:
-            keypoints = keypoints_all[idx]
         # torch.save(keypoints, "/home/hhm/pose_process/keypoints_smplx.pt")
         if len(keypoints.shape) == 2:
             keypoints = np.expand_dims(keypoints, axis=0)
             # keypoints.unsqueeze_(dim=0)
-        print('Processing: {}'.format(data['img_path']))
+        print('Processing: {}'.format(fn))
 
-        curr_result_folder = osp.join(result_folder, fn)
+        curr_result_folder = osp.join(result_folder, fn).replace(".mp4", "")
         if not osp.exists(curr_result_folder):
             os.makedirs(curr_result_folder)
         curr_mesh_folder = osp.join(mesh_folder, fn)
@@ -305,27 +281,27 @@ def main(**args):
             betas_fix=betas_fix.to(device=device)
             joints_smooth=joints_smooth.to(device=device)
 
-
-        for person_id in range(int(keypoints.shape[0] / batch_size)+1):
-            # if person_id >= max_persons and max_persons > 0:
-            #     continue
-            if batch_size * person_id >= keypoints.shape[0]:
+        pose_dict_list = []
+        for frame_idx in range(int(len(keypoints_path_list) / batch_size)+1):
+            video_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, img = video_cap.read()
+            if batch_size * frame_idx >= keypoints.shape[0]:
                 continue
             curr_result_fn = osp.join(curr_result_folder,
-                                      '{:04d}.pkl'.format(idx))
+                                      '{:04d}.pkl'.format(frame_idx))
             curr_mesh_fn = osp.join(curr_mesh_folder,
-                                    '{:03d}.obj'.format(person_id))
+                                    '{:03d}.obj'.format(frame_idx))
 
             curr_img_folder = osp.join(output_folder, 'images', fn,
-                                       '{:03d}'.format(person_id))
+                                       '{:03d}'.format(frame_idx))
             if not osp.exists(curr_img_folder):
                 os.makedirs(curr_img_folder)
 
             if gender_lbl_type != 'none':
                 if gender_lbl_type == 'pd' and 'gender_pd' in data:
-                    gender = data['gender_pd'][person_id]
+                    gender = data['gender_pd'][frame_idx]
                 if gender_lbl_type == 'gt' and 'gender_gt' in data:
-                    gender = data['gender_gt'][person_id]
+                    gender = data['gender_gt'][frame_idx]
             else:
                 gender = input_gender
 
@@ -338,7 +314,7 @@ def main(**args):
 
             out_img_fn = osp.join(curr_img_folder, 'output.png')
 
-            ret, joints_smooth_re, camera_transl_re, camera_orient_re, betas_fix_re = fit_single_frame(img, person_id,keypoints[person_id*batch_size:person_id*batch_size+batch_size],
+            ret, joints_smooth_re, camera_transl_re, camera_orient_re, betas_fix_re = fit_single_frame(img, frame_idx,keypoints[frame_idx*batch_size:frame_idx*batch_size+batch_size],
                              body_model=body_model,
                              camera=camera,
                              joint_weights=joint_weights,
@@ -360,7 +336,7 @@ def main(**args):
                              camera_orient=camera_orient,
                              joints_smooth=joints_smooth,
                              **args)
-            print("%d finished"% (person_id))
+            print("%d finished"% (frame_idx))
             joints_smooth = joints_smooth_re.clone()
             camera_transl = camera_transl_re.clone()
             camera_orient = camera_orient_re.clone()
@@ -382,7 +358,6 @@ def main(**args):
                 body_rots[i] = frame["body_pose_rot"]
                 left_hand_rots[i] = frame["left_hand_pose_rot"]
                 right_hand_rots[i] = frame["right_hand_pose_rot"]
-            pose_dict_list = []
             pose_dict = {}
             pose_dict["poses"] = []
             for i in range(frame_number):
@@ -390,10 +365,13 @@ def main(**args):
                 action_dict["smplx_body_pose"] = body_rots[i]
                 action_dict["smplx_lhand_pose"] = left_hand_rots[i]
                 action_dict["smplx_rhand_pose"] = right_hand_rots[i]
+                action_dict["smplx_root_pose"] = global_oris[i]
                 action_dict["smplx_jaw_pose"] = np.zeros(3)
                 pose_dict["poses"].append(action_dict)
             pose_dict_list.append(pose_dict)
+        with open(curr_result_fn, 'wb') as result_file:
             pickle.dump(pose_dict_list, result_file, protocol=2)
+        video_cap.release()
             # pickle.dump(result, result_file, protocol=2)
 
 
